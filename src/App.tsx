@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { LESSONS } from './data/lessons';
 import { ESP32_PINS } from './data/esp32Pinout';
 import {
@@ -44,10 +44,21 @@ const WIRE_COLOR_OPTIONS: { color: WireColor; label: string }[] = [
   { color: 'purple', label: '紫 (CS)' },
 ];
 
+type MobileCameraPreset = 'fit' | 'esp32' | 'sensor' | 'both';
+
 export default function App() {
   const [selectedLessonId, setSelectedLessonId] = useState<string>(LESSONS[0].id);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [protocolFilter, setProtocolFilter] = useState<string>('ALL');
+
+  // Responsive viewport detection (Portrait Mobile / Tablet vs Desktop)
+  const [isMobile, setIsMobile] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 1024 : false
+  );
+  const [mobileTab, setMobileTab] = useState<'wiring' | 'sim' | 'principle' | 'code'>('wiring');
+  const [mobileCamera, setMobileCamera] = useState<MobileCameraPreset>('both');
+  const [mobileBoardExpanded, setMobileBoardExpanded] = useState<boolean>(false);
+  const [showMobileLessonPicker, setShowMobileLessonPicker] = useState<boolean>(false);
 
   // Interactive Breadboard State
   const [hoveredHole, setHoveredHole] = useState<string | null>(null);
@@ -63,7 +74,7 @@ export default function App() {
   const [pendingStartHole, setPendingStartHole] = useState<string | null>(null);
   const [activeWireColor, setActiveWireColor] = useState<WireColor>('green');
 
-  // Right Panel Tabs
+  // Desktop Right Panel Tabs
   const [rightTab, setRightTab] = useState<'guide' | 'code' | 'pinout'>('guide');
   const [codeFramework, setCodeFramework] = useState<'espidf' | 'arduino'>('espidf');
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
@@ -73,10 +84,53 @@ export default function App() {
   const [simValues, setSimValues] = useState<Record<string, number>>({});
   const [blinkTick, setBlinkTick] = useState<boolean>(false);
 
+  const boardScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const onResize = () => {
+      setIsMobile(window.innerWidth < 1024);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   const currentLesson: ExampleLesson = useMemo(
     () => LESSONS.find((l) => l.id === selectedLessonId) || LESSONS[0],
     [selectedLessonId]
   );
+
+  // Load lesson & custom wires from URL hash if present
+  useEffect(() => {
+    const hash = window.location.hash.slice(1);
+    if (!hash) return;
+    const params = new URLSearchParams(hash);
+    const lId = params.get('lesson');
+    if (lId && LESSONS.some((l) => l.id === lId)) {
+      setSelectedLessonId(lId);
+    }
+    const wParam = params.get('wires');
+    if (wParam) {
+      setPracticeMode(true);
+      const parsed: WireConnection[] = wParam
+        .split(',')
+        .map((token, idx) => {
+          const [fromHole, toHole, color] = token.split('-');
+          if (!fromHole || !toHole) return null;
+          return {
+            id: `shared-wire-${idx}-${Date.now()}`,
+            fromHole,
+            toHole,
+            color: (color as WireColor) || 'green',
+            signalName: `分享跳線 (${fromHole} ↔ ${toHole})`,
+            espPin: fromHole,
+            sensorPin: toHole,
+            description: '由網址分享載入之自訂杜邦線',
+          };
+        })
+        .filter(Boolean) as WireConnection[];
+      setTimeout(() => setUserWires(parsed), 50);
+    }
+  }, []);
 
   // Reset simulation & practice state when switching lessons
   useEffect(() => {
@@ -89,7 +143,6 @@ export default function App() {
     setHoveredWireId(null);
     setPendingStartHole(null);
     if (practiceMode) {
-      // Keep power rail jumper wires or start completely fresh
       setUserWires([]);
     }
   }, [currentLesson, practiceMode]);
@@ -107,7 +160,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [simValues]);
 
-  // Filtered lessons in sidebar
+  // Filtered lessons
   const filteredLessons = useMemo(() => {
     return LESSONS.filter((lesson) => {
       const matchProto =
@@ -128,11 +181,12 @@ export default function App() {
 
   const activeWires = practiceMode ? userWires : currentLesson.wires;
 
-  // Conductive holes highlighted when hovering a hole or wire
+  // Conductive holes highlighted when hovering/tapping a hole or wire
   const highlightedHoles = useMemo(() => {
     const set = new Set<string>();
-    if (hoveredHole && showConductiveStrips) {
-      for (const h of getConductiveHolesInStrip(hoveredHole)) {
+    const targetHole = hoveredHole || selectedPinHole;
+    if (targetHole && showConductiveStrips) {
+      for (const h of getConductiveHolesInStrip(targetHole)) {
         set.add(h);
       }
     }
@@ -147,9 +201,9 @@ export default function App() {
       for (const h of getConductiveHolesInStrip(pendingStartHole)) set.add(h);
     }
     return set;
-  }, [hoveredHole, hoveredWireId, pendingStartHole, activeWires, showConductiveStrips]);
+  }, [hoveredHole, selectedPinHole, hoveredWireId, pendingStartHole, activeWires, showConductiveStrips]);
 
-  // Quiz verification: check each required wire in currentLesson.wires
+  // Quiz verification
   const quizResults = useMemo(() => {
     return currentLesson.wires.map((targetWire) => {
       const connected = areHolesConnected(
@@ -168,7 +222,7 @@ export default function App() {
 
   const completedQuizCount = quizResults.filter((r) => r.connected).length;
 
-  // Live Serial Monitor output generator based on simulation controls
+  // Live Serial Monitor output generator
   const serialLogs = useMemo(() => {
     const logs: string[] = [];
     const id = currentLesson.id;
@@ -178,7 +232,7 @@ export default function App() {
       const ledOn = btn ? true : freq > 0 ? blinkTick : false;
       logs.push(`I (1024) GPIO_DEMO: GPIO5=OUTPUT, GPIO27=INPUT_PULLUP (ISR NEGEDGE)`);
       logs.push(
-        `I (1524) GPIO_DEMO: 按鈕狀態(GPIO27)=${btn ? '0 (按下接地!)' : '1 (上拉3.3V)'} | LED(GPIO5)=${
+        `I (1524) GPIO_DEMO: 按鈕(GPIO27)=${btn ? '0 (按下接地!)' : '1 (上拉3.3V)'} | LED(GPIO5)=${
           ledOn ? 'HIGH (亮起)' : 'LOW (熄滅)'
         }`
       );
@@ -237,20 +291,22 @@ export default function App() {
     } else if (id === 'spi-sdcard') {
       const trig = simValues['writeTrigger'] ?? 1;
       logs.push(
-        `I (7010) SDSPI: VSPI Mounted (CS=GPIO5, SCK=GPIO18, MISO=GPIO19, MOSI=GPIO23)`
+        `I (7010) SDSPI: VSPI Mounted (CS=GPIO5, SCK=18, MISO=19, MOSI=23)`
       );
       logs.push(
         `I (7080) FATFS: ${
           trig
             ? '寫入 /sdcard/log.csv -> "2026-11-11,26.0,60.0" (OK)'
-            : '待機中，點擊右側按鈕可寫入 CSV 日誌'
+            : '待機中，點擊按鈕可寫入 CSV 日誌'
         }`
       );
     } else if (id === 'rmt-ws2812-rgb') {
       const hue = simValues['hueDeg'] ?? 180;
       const bright = simValues['rgbBright'] ?? 80;
       logs.push(`I (9010) RMT_WS2812: Channel=GPIO18 (10MHz Tick, 800kHz GRB)`);
-      logs.push(`I (9040) LED_STRIP: 8 顆 WS2812B 燈珠更新 -> Hue=${hue}°, Brightness=${bright}%`);
+      logs.push(
+        `I (9040) LED_STRIP: 8 顆 WS2812B 燈珠更新 -> Hue=${hue}°, Brightness=${bright}%`
+      );
     } else if (id === 'uart-gps-serial') {
       const sats = simValues['satellites'] ?? 8;
       logs.push(
@@ -265,9 +321,10 @@ export default function App() {
     return logs;
   }, [currentLesson, simValues, blinkTick]);
 
-  // Handle clicking a breadboard hole
+  // Handle clicking/tapping a breadboard hole
   const handleHoleClick = (holeId: string) => {
     setSelectedPinHole(holeId);
+    setHoveredWireId(null);
     if (!practiceMode) return;
 
     if (!pendingStartHole) {
@@ -290,51 +347,17 @@ export default function App() {
     }
   };
 
-  
-  // Load lesson & custom wires from URL hash if present
-  useEffect(() => {
-    const hash = window.location.hash.slice(1);
-    if (!hash) return;
-    const params = new URLSearchParams(hash);
-    const lId = params.get("lesson");
-    if (lId && LESSONS.some((l) => l.id === lId)) {
-      setSelectedLessonId(lId);
-    }
-    const wParam = params.get("wires");
-    if (wParam) {
-      setPracticeMode(true);
-      const parsed: WireConnection[] = wParam
-        .split(",")
-        .map((token, idx) => {
-          const [fromHole, toHole, color] = token.split("-");
-          if (!fromHole || !toHole) return null;
-          return {
-            id: `shared-wire-${idx}-${Date.now()}`,
-            fromHole,
-            toHole,
-            color: (color as WireColor) || "green",
-            signalName: `分享跳線 (${fromHole} ↔ ${toHole})`,
-            espPin: fromHole,
-            sensorPin: toHole,
-            description: "由網址分享載入之自訂杜邦線",
-          };
-        })
-        .filter(Boolean) as WireConnection[];
-      setTimeout(() => setUserWires(parsed), 50);
-    }
-  }, []);
-
   const handleShareLink = () => {
     const params = new URLSearchParams();
-    params.set("lesson", currentLesson.id);
+    params.set('lesson', currentLesson.id);
     if (practiceMode && userWires.length > 0) {
       params.set(
-        "wires",
-        userWires.map((w) => `${w.fromHole}-${w.toHole}-${w.color}`).join(",")
+        'wires',
+        userWires.map((w) => `${w.fromHole}-${w.toHole}-${w.color}`).join(',')
       );
     }
     const url = `${window.location.origin}${window.location.pathname}#${params.toString()}`;
-    window.history.replaceState(null, "", `#${params.toString()}`);
+    window.history.replaceState(null, '', `#${params.toString()}`);
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
@@ -350,7 +373,6 @@ export default function App() {
     setTimeout(() => setCopiedCode(false), 1800);
   };
 
-  // Determine hovered hole occupant details
   const activeInspectHole = hoveredHole || selectedPinHole;
   const holeInfo = useMemo(() => {
     if (!activeInspectHole) return null;
@@ -361,6 +383,20 @@ export default function App() {
     () => activeWires.find((w) => w.id === hoveredWireId) || null,
     [activeWires, hoveredWireId]
   );
+
+  // Compute dynamic SVG viewBox for Mobile Portrait Camera Presets!
+  // This makes Portrait Mobile super crisp without requiring clumsy 2D scrolling:
+  // - 'both': focuses directly on Columns 1..41 (x: 24..880, width 856) where ESP32 & sensors live!
+  // - 'esp32': zooms right into ESP32 DevKitC (Columns 1..22, x: 24..480)
+  // - 'sensor': zooms right into the Sensor & Resistor zone (Columns 21..43, x: 430..900)
+  // - 'fit': full 48-column breadboard (0..1090)
+  const svgViewBox = useMemo(() => {
+    if (!isMobile) return '0 0 1090 470';
+    if (mobileCamera === 'esp32') return '22 18 460 425';
+    if (mobileCamera === 'sensor') return '420 18 485 425';
+    if (mobileCamera === 'both') return '22 18 865 425';
+    return '0 0 1090 470';
+  }, [isMobile, mobileCamera]);
 
   // Render sensor visual body on the SVG breadboard
   const renderSensorComponent = (comp: SensorComponent) => {
@@ -389,7 +425,6 @@ export default function App() {
 
       return (
         <g key={comp.id} className="pointer-events-none">
-          {/* Legs */}
           <line
             x1={firstPin.x}
             y1={firstPin.y}
@@ -406,7 +441,6 @@ export default function App() {
             stroke="#94a3b8"
             strokeWidth={2.5}
           />
-          {/* Glow */}
           {brightness > 0.2 && (
             <circle
               cx={centerX}
@@ -416,7 +450,6 @@ export default function App() {
               opacity={0.35 * brightness}
             />
           )}
-          {/* LED Dome */}
           <circle
             cx={centerX}
             cy={bodyY}
@@ -437,7 +470,7 @@ export default function App() {
             x={centerX}
             y={bodyY - 20}
             textAnchor="middle"
-            className="fill-slate-100 text-[11px] font-bold"
+            className="fill-slate-900 text-[11px] font-bold"
           >
             {comp.name} {isPwm ? `(${duty}%)` : brightness > 0.5 ? '(ON)' : '(OFF)'}
           </text>
@@ -486,7 +519,7 @@ export default function App() {
             x={midX}
             y={midY - 28}
             textAnchor="middle"
-            className="fill-cyan-300 text-[11px] font-bold"
+            className="fill-slate-900 text-[11px] font-bold"
           >
             {comp.name} (點擊按壓)
           </text>
@@ -537,7 +570,6 @@ export default function App() {
             stroke="#93c5fd"
             strokeWidth={1.5}
           />
-          {/* Rotating Servo Horn */}
           <g
             transform={`translate(${centerX - 14}, ${bodyY + 22}) rotate(${
               angle - 90
@@ -627,7 +659,6 @@ export default function App() {
       );
     }
 
-    // Top-mounted rectangular modules: DHT11, HC-SR04, OLED, MPU6050, SDCard, GPS
     const bodyWidth = Math.max(88, (comp.pins.length + 1) * PITCH + 16);
     const bodyHeight = 52;
     const bodyY = firstPin.y - bodyHeight - 24;
@@ -665,7 +696,6 @@ export default function App() {
 
     return (
       <g key={comp.id} className="pointer-events-none">
-        {/* Pin Header Legs */}
         {comp.pins.map((p) => {
           const pt = getHoleCoords(p.hole);
           return (
@@ -680,7 +710,6 @@ export default function App() {
             />
           );
         })}
-        {/* Module PCB */}
         <rect
           x={centerX - bodyWidth / 2}
           y={bodyY}
@@ -720,18 +749,1056 @@ export default function App() {
     );
   };
 
-  // ESP32 Board visual geometry (straddling columns 4..18 between row c and row h)
+  // Shared SVG Breadboard Element used by both Desktop & Portrait Mobile
   const espLeftX = getHoleCoords('c4').x - 16;
   const espRightX = getHoleCoords('c18').x + 16;
   const espTopY = getHoleCoords('c4').y + 5;
   const espBotY = getHoleCoords('h4').y - 5;
 
+  const renderBreadboardSvg = () => (
+    <svg
+      width={isMobile ? '100%' : 1090}
+      height={isMobile ? '100%' : 470}
+      viewBox={svgViewBox}
+      preserveAspectRatio="xMidYMid meet"
+      className="select-none drop-shadow-2xl max-h-full"
+    >
+      <defs>
+        <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="3" result="blur" />
+          <feComposite in="SourceGraphic" in2="blur" operator="over" />
+        </filter>
+      </defs>
+
+      {/* Breadboard Base Plastic Body */}
+      <rect
+        x={28}
+        y={28}
+        width={1034}
+        height={405}
+        rx={16}
+        fill="#f8fafc"
+        stroke="#cbd5e1"
+        strokeWidth={3}
+      />
+
+      {/* Top & Bottom Power Rail Red/Blue Lines */}
+      <line
+        x1={66}
+        y1={BOARD_ORIGIN_Y - 10}
+        x2={1026}
+        y2={BOARD_ORIGIN_Y - 10}
+        stroke="#ef4444"
+        strokeWidth={2}
+      />
+      <text
+        x={48}
+        y={BOARD_ORIGIN_Y + 4}
+        className="fill-red-600 text-xs font-black font-mono"
+      >
+        +
+      </text>
+      <line
+        x1={66}
+        y1={BOARD_ORIGIN_Y + PITCH + 10}
+        x2={1026}
+        y2={BOARD_ORIGIN_Y + PITCH + 10}
+        stroke="#2563eb"
+        strokeWidth={2}
+      />
+      <text
+        x={48}
+        y={BOARD_ORIGIN_Y + PITCH + 4}
+        className="fill-blue-600 text-xs font-black font-mono"
+      >
+        -
+      </text>
+
+      {/* Bottom Power Rail Lines */}
+      <line
+        x1={66}
+        y1={BOARD_ORIGIN_Y + 15 * PITCH - 10}
+        x2={1026}
+        y2={BOARD_ORIGIN_Y + 15 * PITCH - 10}
+        stroke="#ef4444"
+        strokeWidth={2}
+      />
+      <text
+        x={48}
+        y={BOARD_ORIGIN_Y + 15 * PITCH + 4}
+        className="fill-red-600 text-xs font-black font-mono"
+      >
+        +
+      </text>
+      <line
+        x1={66}
+        y1={BOARD_ORIGIN_Y + 16 * PITCH + 10}
+        x2={1026}
+        y2={BOARD_ORIGIN_Y + 16 * PITCH + 10}
+        stroke="#2563eb"
+        strokeWidth={2}
+      />
+      <text
+        x={48}
+        y={BOARD_ORIGIN_Y + 16 * PITCH + 4}
+        className="fill-blue-600 text-xs font-black font-mono"
+      >
+        -
+      </text>
+
+      {/* Center DIP Ravine Groove */}
+      <rect
+        x={42}
+        y={BOARD_ORIGIN_Y + 7.6 * PITCH}
+        width={1006}
+        height={1.3 * PITCH}
+        rx={4}
+        fill="#e2e8f0"
+        stroke="#cbd5e1"
+        strokeWidth={1}
+      />
+
+      {/* Column Numbers (1..48) */}
+      {Array.from({ length: TOTAL_COLS }, (_, i) => {
+        const col = i + 1;
+        const x = BOARD_ORIGIN_X + i * PITCH;
+        const showNum = col === 1 || col % 5 === 0 || col === TOTAL_COLS;
+        if (!showNum) return null;
+        return (
+          <g key={`col-num-${col}`}>
+            <text
+              x={x}
+              y={BOARD_ORIGIN_Y + 2.4 * PITCH}
+              textAnchor="middle"
+              className="fill-slate-500 text-[10px] font-mono font-bold"
+            >
+              {col}
+            </text>
+            <text
+              x={x}
+              y={BOARD_ORIGIN_Y + 14.2 * PITCH}
+              textAnchor="middle"
+              className="fill-slate-500 text-[10px] font-mono font-bold"
+            >
+              {col}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Row Letters (a..e, f..j) */}
+      {UPPER_ROWS.map((r, idx) => {
+        const y = BOARD_ORIGIN_Y + (3 + idx) * PITCH + 4;
+        return (
+          <g key={`row-u-${r}`}>
+            <text
+              x={52}
+              y={y}
+              textAnchor="middle"
+              className="fill-slate-600 text-[11px] font-mono font-bold uppercase"
+            >
+              {r}
+            </text>
+            <text
+              x={1038}
+              y={y}
+              textAnchor="middle"
+              className="fill-slate-600 text-[11px] font-mono font-bold uppercase"
+            >
+              {r}
+            </text>
+          </g>
+        );
+      })}
+      {LOWER_ROWS.map((r, idx) => {
+        const y = BOARD_ORIGIN_Y + (9.5 + idx) * PITCH + 4;
+        return (
+          <g key={`row-l-${r}`}>
+            <text
+              x={52}
+              y={y}
+              textAnchor="middle"
+              className="fill-slate-600 text-[11px] font-mono font-bold uppercase"
+            >
+              {r}
+            </text>
+            <text
+              x={1038}
+              y={y}
+              textAnchor="middle"
+              className="fill-slate-600 text-[11px] font-mono font-bold uppercase"
+            >
+              {r}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Conductive Strip Highlight Overlay */}
+      {showConductiveStrips && highlightedHoles.size > 0 && (
+        <g className="pointer-events-none">
+          {Array.from(highlightedHoles).map((hId) => {
+            const pt = getHoleCoords(hId);
+            return (
+              <circle
+                key={`hl-${hId}`}
+                cx={pt.x}
+                cy={pt.y}
+                r={8.5}
+                fill="#06b6d4"
+                opacity={0.38}
+              />
+            );
+          })}
+        </g>
+      )}
+
+      {/* Render All Breadboard Holes */}
+      {Array.from({ length: TOTAL_COLS }, (_, i) => {
+        const col = i + 1;
+        const holesInCol = [
+          `tp+${col}`,
+          `tp-${col}`,
+          ...UPPER_ROWS.map((r) => `${r}${col}`),
+          ...LOWER_ROWS.map((r) => `${r}${col}`),
+          `bp+${col}`,
+          `bp-${col}`,
+        ];
+        return (
+          <g key={`holes-col-${col}`}>
+            {holesInCol.map((hId) => {
+              const pt = getHoleCoords(hId);
+              const isHighlighted = highlightedHoles.has(hId);
+              const isStart = pendingStartHole === hId;
+              return (
+                <g
+                  key={hId}
+                  onMouseEnter={() => !isMobile && setHoveredHole(hId)}
+                  onMouseLeave={() => !isMobile && setHoveredHole(null)}
+                  onClick={() => handleHoleClick(hId)}
+                  className="cursor-pointer"
+                >
+                  <rect
+                    x={pt.x - 4.5}
+                    y={pt.y - 4.5}
+                    width={9}
+                    height={9}
+                    rx={2}
+                    fill={
+                      isStart
+                        ? '#f59e0b'
+                        : isHighlighted
+                        ? '#06b6d4'
+                        : '#334155'
+                    }
+                    stroke={isHighlighted || isStart ? '#0891b2' : '#94a3b8'}
+                    strokeWidth={isHighlighted || isStart ? 1.8 : 0.8}
+                  />
+                </g>
+              );
+            })}
+          </g>
+        );
+      })}
+
+      {/* ESP32-WROOM-32 DevKitC 30-Pin Module */}
+      <g>
+        {ESP32_PINS.map((pin) => {
+          const pt = getHoleCoords(pin.hole);
+          const isUsed = activeWires.some(
+            (w) =>
+              getStripId(w.fromHole) === getStripId(pin.hole) ||
+              getStripId(w.toHole) === getStripId(pin.hole)
+          );
+          return (
+            <g
+              key={pin.pinNumber}
+              onMouseEnter={() => !isMobile && setHoveredHole(pin.hole)}
+              onMouseLeave={() => !isMobile && setHoveredHole(null)}
+              onClick={() => handleHoleClick(pin.hole)}
+              className="cursor-pointer"
+            >
+              <rect
+                x={pt.x - 5}
+                y={pt.y - 5}
+                width={10}
+                height={10}
+                rx={2}
+                fill={isUsed ? '#eab308' : '#64748b'}
+                stroke={isUsed ? '#fef08a' : '#1e293b'}
+                strokeWidth={1.5}
+              />
+            </g>
+          );
+        })}
+
+        <rect
+          x={espLeftX}
+          y={espTopY}
+          width={espRightX - espLeftX}
+          height={espBotY - espTopY}
+          rx={8}
+          fill="#0f172a"
+          stroke="#38bdf8"
+          strokeWidth={2}
+        />
+
+        <rect
+          x={espLeftX - 10}
+          y={(espTopY + espBotY) / 2 - 16}
+          width={18}
+          height={32}
+          rx={3}
+          fill="#94a3b8"
+          stroke="#475569"
+          strokeWidth={1.5}
+        />
+
+        <rect
+          x={espLeftX + 68}
+          y={espTopY + 20}
+          width={155}
+          height={espBotY - espTopY - 40}
+          rx={4}
+          fill="#334155"
+          stroke="#94a3b8"
+          strokeWidth={1.5}
+        />
+        <text
+          x={espLeftX + 145}
+          y={(espTopY + espBotY) / 2 - 3}
+          textAnchor="middle"
+          className="fill-slate-200 text-xs font-bold tracking-wider pointer-events-none"
+        >
+          ESP32-WROOM-32
+        </text>
+        <text
+          x={espLeftX + 145}
+          y={(espTopY + espBotY) / 2 + 12}
+          textAnchor="middle"
+          className="fill-cyan-400 text-[10px] font-mono pointer-events-none"
+        >
+          Dual-Core 240MHz · Wi-Fi & BLE
+        </text>
+
+        <circle
+          cx={espLeftX + 32}
+          cy={(espTopY + espBotY) / 2}
+          r={4}
+          fill="#ef4444"
+          filter="url(#glow)"
+        />
+
+        {ESP32_PINS.map((pin) => {
+          const pt = getHoleCoords(pin.hole);
+          const isTop = pin.side === 'top';
+          const isUsed = activeWires.some(
+            (w) =>
+              getStripId(w.fromHole) === getStripId(pin.hole) ||
+              getStripId(w.toHole) === getStripId(pin.hole)
+          );
+          const labelY = isTop ? espTopY + 13 : espBotY - 6;
+          return (
+            <text
+              key={`silk-${pin.pinNumber}`}
+              x={pt.x}
+              y={labelY}
+              textAnchor="middle"
+              className={`text-[9px] font-mono font-bold pointer-events-none ${
+                isUsed
+                  ? 'fill-amber-300'
+                  : pin.silk === '3V3' || pin.silk === 'VIN'
+                  ? 'fill-rose-400'
+                  : pin.silk === 'GND'
+                  ? 'fill-slate-400'
+                  : 'fill-slate-300'
+              }`}
+            >
+              {pin.silk}
+            </text>
+          );
+        })}
+      </g>
+
+      {/* Render Sensor Modules */}
+      {currentLesson.components.map((comp) => renderSensorComponent(comp))}
+
+      {/* Render Passive Resistors */}
+      {currentLesson.passives.map((pas) => {
+        const p1 = getHoleCoords(pas.fromHole);
+        const p2 = getHoleCoords(pas.toHole);
+        const midX = (p1.x + p2.x) / 2;
+        const midY = (p1.y + p2.y) / 2;
+        const angle =
+          (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
+        return (
+          <g key={pas.id} className="pointer-events-none">
+            <line
+              x1={p1.x}
+              y1={p1.y}
+              x2={p2.x}
+              y2={p2.y}
+              stroke="#94a3b8"
+              strokeWidth={2.5}
+            />
+            <g transform={`translate(${midX}, ${midY}) rotate(${angle})`}>
+              <rect
+                x={-14}
+                y={-5}
+                width={28}
+                height={10}
+                rx={4}
+                fill="#fde68a"
+                stroke="#92400e"
+                strokeWidth={1.2}
+              />
+              {pas.bands.map((bColor, idx) => (
+                <rect
+                  key={idx}
+                  x={-9 + idx * 5.5}
+                  y={-5}
+                  width={2.5}
+                  height={10}
+                  fill={bColor}
+                />
+              ))}
+            </g>
+            {showPinLabels && (
+              <text
+                x={midX}
+                y={midY - 10}
+                textAnchor="middle"
+                className="fill-amber-900 text-[10px] font-bold"
+              >
+                {pas.value}
+              </text>
+            )}
+          </g>
+        );
+      })}
+
+      {/* Render Jumper Wires */}
+      {activeWires.map((wire, idx) => {
+        const p1 = getHoleCoords(wire.fromHole);
+        const p2 = getHoleCoords(wire.toHole);
+        const dy = p2.y - p1.y;
+        const midX = (p1.x + p2.x) / 2;
+        const midY = (p1.y + p2.y) / 2;
+        const curveArc =
+          wire.arcOffset !== undefined
+            ? wire.arcOffset
+            : Math.abs(dy) < 40
+            ? -28 - (idx % 3) * 12
+            : (idx % 2 === 0 ? 1 : -1) * 24;
+        const ctrlX = midX;
+        const ctrlY = midY + curveArc;
+        const pathD = `M ${p1.x} ${p1.y} Q ${ctrlX} ${ctrlY} ${p2.x} ${p2.y}`;
+        const strokeHex = WIRE_HEX[wire.color] || '#38bdf8';
+        const isHovered = hoveredWireId === wire.id;
+
+        return (
+          <g
+            key={wire.id}
+            onMouseEnter={() => !isMobile && setHoveredWireId(wire.id)}
+            onMouseLeave={() => !isMobile && setHoveredWireId(null)}
+            onClick={() => {
+              if (practiceMode) {
+                setUserWires((prev) => prev.filter((w) => w.id !== wire.id));
+              } else {
+                setHoveredWireId((prev) => (prev === wire.id ? null : wire.id));
+              }
+            }}
+            className="cursor-pointer"
+          >
+            <path
+              d={pathD}
+              fill="none"
+              stroke={isHovered ? '#ffffff' : '#020617'}
+              strokeWidth={isHovered ? 8.5 : 6.5}
+              strokeLinecap="round"
+              opacity={isHovered ? 0.9 : 0.45}
+            />
+            <path
+              d={pathD}
+              fill="none"
+              stroke={strokeHex}
+              strokeWidth={isHovered ? 5.8 : 4.2}
+              strokeLinecap="round"
+            />
+            <circle
+              cx={p1.x}
+              cy={p1.y}
+              r={4.2}
+              fill={strokeHex}
+              stroke="#ffffff"
+              strokeWidth={1.2}
+            />
+            <circle
+              cx={p2.x}
+              cy={p2.y}
+              r={4.2}
+              fill={strokeHex}
+              stroke="#ffffff"
+              strokeWidth={1.2}
+            />
+
+            {(showPinLabels || isHovered) && (
+              <g
+                transform={`translate(${ctrlX}, ${
+                  (p1.y + 2 * ctrlY + p2.y) / 4
+                })`}
+                className="pointer-events-none"
+              >
+                <rect
+                  x={-68}
+                  y={-10}
+                  width={136}
+                  height={18}
+                  rx={9}
+                  fill="#0f172a"
+                  fillOpacity={0.92}
+                  stroke={strokeHex}
+                  strokeWidth={1.4}
+                />
+                <text
+                  x={0}
+                  y={2.5}
+                  textAnchor="middle"
+                  className="fill-slate-100 text-[9.5px] font-mono font-bold"
+                >
+                  {wire.signalName}
+                </text>
+              </g>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+
+  // ============================================================================
+  // PORTRAIT MOBILE LAYOUT (< 1024px)
+  // ============================================================================
+  if (isMobile) {
+    return (
+      <div className="h-dvh w-screen overflow-hidden flex flex-col bg-slate-950 text-slate-100">
+        {/* 1. Compact Mobile Top Bar */}
+        <header className="shrink-0 border-b border-slate-800 bg-slate-900/95 px-3 py-2 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="h-7 w-7 shrink-0 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center font-black text-slate-950 text-xs">
+                ESP
+              </div>
+              <div className="truncate">
+                <div className="font-bold text-xs text-white truncate">
+                  ESP32 互動麵包板工作台
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => setPracticeMode((p) => !p)}
+                className={`px-2 py-1 rounded-md text-[11px] font-bold transition ${
+                  practiceMode
+                    ? 'bg-amber-500 text-slate-950'
+                    : 'bg-slate-800 text-cyan-300 border border-cyan-500/30'
+                }`}
+              >
+                {practiceMode
+                  ? `⚡ 練習 (${completedQuizCount}/${currentLesson.wires.length})`
+                  : '📘 教學'}
+              </button>
+              <button
+                onClick={handleShareLink}
+                className="px-2 py-1 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[11px] font-bold"
+              >
+                {copiedLink ? '✓ 已複製' : '🔗 分享'}
+              </button>
+            </div>
+          </div>
+
+          {/* Lesson Picker Trigger Button (Thumb-Friendly Dropdown Sheet) */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setShowMobileLessonPicker((v) => !v)}
+              className="flex-1 flex items-center justify-between px-3 py-1.5 rounded-lg bg-slate-950 border border-cyan-500/40 text-left"
+            >
+              <div className="truncate pr-2">
+                <span className="text-[10px] font-mono text-cyan-400 font-bold mr-1.5">
+                  [{currentLesson.chapter}]
+                </span>
+                <span className="text-xs font-bold text-white">
+                  {currentLesson.title}
+                </span>
+              </div>
+              <span className="text-xs text-cyan-300 font-bold shrink-0">
+                {showMobileLessonPicker ? '▲ 收起' : '▼ 切換範例'}
+              </span>
+            </button>
+          </div>
+
+          {/* Expandable Lesson Drawer Sheet */}
+          {showMobileLessonPicker && (
+            <div className="max-h-64 overflow-y-auto rounded-xl bg-slate-950 border border-slate-700 p-2 space-y-1.5 shadow-2xl">
+              {LESSONS.map((lesson) => {
+                const active = lesson.id === currentLesson.id;
+                return (
+                  <button
+                    key={lesson.id}
+                    onClick={() => {
+                      setSelectedLessonId(lesson.id);
+                      setShowMobileLessonPicker(false);
+                    }}
+                    className={`w-full text-left p-2.5 rounded-lg border transition ${
+                      active
+                        ? 'bg-cyan-500/15 border-cyan-500 text-white'
+                        : 'bg-slate-900/80 border-slate-800 text-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[10px] font-mono text-cyan-400 mb-0.5">
+                      <span>{lesson.chapter}</span>
+                      <span>{lesson.protocols.join(' · ')}</span>
+                    </div>
+                    <div className="text-xs font-bold">{lesson.title}</div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </header>
+
+        {/* 2. Sticky Top Breadboard Stage with Smart Camera Presets */}
+        <div
+          className={`shrink-0 flex flex-col border-b border-slate-800 bg-slate-950 transition-all ${
+            mobileBoardExpanded ? 'h-[62dvh]' : 'h-[38dvh]'
+          }`}
+        >
+          {/* Camera Focus & Label Toolbar */}
+          <div className="px-2.5 py-1.5 bg-slate-900/70 border-b border-slate-800/80 flex items-center justify-between gap-1 overflow-x-auto">
+            <div className="flex items-center gap-1 shrink-0">
+              {(
+                [
+                  { id: 'both', label: '🔍 雙端特寫' },
+                  { id: 'esp32', label: '🎯 晶片端' },
+                  { id: 'sensor', label: '🎯 感測器' },
+                  { id: 'fit', label: '全景' },
+                ] as { id: MobileCameraPreset; label: string }[]
+              ).map((cam) => (
+                <button
+                  key={cam.id}
+                  onClick={() => setMobileCamera(cam.id)}
+                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition ${
+                    mobileCamera === cam.id
+                      ? 'bg-cyan-500 text-slate-950 font-bold'
+                      : 'bg-slate-800 text-slate-300'
+                  }`}
+                >
+                  {cam.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => setShowPinLabels((v) => !v)}
+                className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                  showPinLabels
+                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                    : 'bg-slate-800 text-slate-400 border-slate-700'
+                }`}
+              >
+                標籤
+              </button>
+              <button
+                onClick={() => setMobileBoardExpanded((v) => !v)}
+                className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-200 border border-slate-700"
+              >
+                {mobileBoardExpanded ? '↕ 縮小畫布' : '↕ 放大畫布'}
+              </button>
+            </div>
+          </div>
+
+          {/* Practice Mode Wire Color Bar on Mobile */}
+          {practiceMode && (
+            <div className="px-2.5 py-1 bg-amber-500/10 border-b border-amber-500/30 flex items-center justify-between gap-2 text-[11px]">
+              <span className="text-amber-300 font-semibold truncate">
+                {pendingStartHole
+                  ? `已選起點 [${pendingStartHole}]，點目標孔連線`
+                  : '點擊兩個孔位拉線（點線可刪除）：'}
+              </span>
+              <div className="flex items-center gap-1 shrink-0">
+                {WIRE_COLOR_OPTIONS.slice(0, 6).map((opt) => (
+                  <button
+                    key={opt.color}
+                    onClick={() => setActiveWireColor(opt.color)}
+                    className={`w-3.5 h-3.5 rounded-full ${
+                      activeWireColor === opt.color ? 'ring-2 ring-white' : 'opacity-60'
+                    }`}
+                    style={{ backgroundColor: WIRE_HEX[opt.color] }}
+                  />
+                ))}
+                <button
+                  onClick={() => setUserWires([])}
+                  className="ml-1 px-1.5 py-0.2 bg-rose-500/20 text-rose-300 rounded text-[10px]"
+                >
+                  清空
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* SVG Canvas Container */}
+          <div
+            ref={boardScrollRef}
+            className="flex-1 overflow-auto flex items-center justify-center p-1.5 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px]"
+          >
+            {renderBreadboardSvg()}
+          </div>
+
+          {/* Touch Probe Status Strip right under Breadboard */}
+          <div className="px-3 py-1.5 bg-slate-900 border-t border-slate-800 text-[11px] flex items-center justify-between gap-2">
+            {hoveredWire ? (
+              <div className="truncate text-cyan-300 font-mono">
+                <span className="font-bold">{hoveredWire.signalName}</span>：
+                {hoveredWire.espPin} [{hoveredWire.fromHole}] ↔ {hoveredWire.sensorPin} [
+                {hoveredWire.toHole}]
+              </div>
+            ) : holeInfo ? (
+              <div className="truncate text-emerald-300">
+                <span className="font-bold">[{activeInspectHole}]</span> {holeInfo.title}
+              </div>
+            ) : (
+              <div className="truncate text-slate-400">
+                💡 點擊麵包板上的杜邦線、腳位或下方接線表可高亮導通位置
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 3. Mobile Segmented Navigation Bar (4 Thumb Tabs) */}
+        <div className="shrink-0 grid grid-cols-4 bg-slate-900 border-b border-slate-800 p-1 gap-1">
+          <button
+            onClick={() => setMobileTab('wiring')}
+            className={`py-1.5 rounded-lg text-xs font-bold transition ${
+              mobileTab === 'wiring'
+                ? 'bg-cyan-500 text-slate-950 shadow'
+                : 'text-slate-400'
+            }`}
+          >
+            🔌 接線表 ({currentLesson.wires.length})
+          </button>
+          <button
+            onClick={() => setMobileTab('sim')}
+            className={`py-1.5 rounded-lg text-xs font-bold transition ${
+              mobileTab === 'sim'
+                ? 'bg-cyan-500 text-slate-950 shadow'
+                : 'text-slate-400'
+            }`}
+          >
+            🎛️ 動態模擬
+          </button>
+          <button
+            onClick={() => setMobileTab('principle')}
+            className={`py-1.5 rounded-lg text-xs font-bold transition ${
+              mobileTab === 'principle'
+                ? 'bg-cyan-500 text-slate-950 shadow'
+                : 'text-slate-400'
+            }`}
+          >
+            📖 原理防呆
+          </button>
+          <button
+            onClick={() => setMobileTab('code')}
+            className={`py-1.5 rounded-lg text-xs font-bold transition ${
+              mobileTab === 'code'
+                ? 'bg-cyan-500 text-slate-950 shadow'
+                : 'text-slate-400'
+            }`}
+          >
+            💻 程式碼
+          </button>
+        </div>
+
+        {/* 4. Mobile Scrollable Content Area */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          {/* MOBILE TAB 1: Interactive Step-by-Step Wiring Cards */}
+          {mobileTab === 'wiring' && (
+            <div className="space-y-2.5">
+              <div className="text-xs text-slate-400 flex items-center justify-between">
+                <span>👇 點擊任一條接線卡片，上方麵包板會立刻發光標示：</span>
+              </div>
+
+              {quizResults.map(({ wire, connected }, index) => {
+                const isSelected = hoveredWireId === wire.id;
+                return (
+                  <div
+                    key={wire.id}
+                    onClick={() =>
+                      setHoveredWireId((prev) => (prev === wire.id ? null : wire.id))
+                    }
+                    className={`p-3 rounded-xl border transition cursor-pointer ${
+                      isSelected
+                        ? 'bg-cyan-500/15 border-cyan-400 shadow-lg'
+                        : 'bg-slate-900/80 border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-mono text-slate-400">
+                          #{index + 1}
+                        </span>
+                        <span
+                          className="w-3 h-3 rounded-full shrink-0 border border-white/40"
+                          style={{ backgroundColor: WIRE_HEX[wire.color] }}
+                        />
+                        <span className="text-xs font-bold text-white">
+                          {wire.signalName}
+                        </span>
+                      </div>
+                      {practiceMode && (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            connected
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}
+                        >
+                          {connected ? '✓ 已導通' : '待接線'}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 bg-slate-950/80 p-2 rounded-lg font-mono text-xs">
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">
+                          ESP32 開發板端
+                        </span>
+                        <span className="text-cyan-300 font-bold">
+                          {wire.espPin}
+                        </span>
+                        <span className="text-amber-300 ml-1">
+                          [{wire.fromHole}]
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">
+                          感測器 / 模組端
+                        </span>
+                        <span className="text-emerald-300 font-bold">
+                          {wire.sensorPin}
+                        </span>
+                        <span className="text-amber-300 ml-1">
+                          [{wire.toHole}]
+                        </span>
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-slate-300 mt-1.5 leading-snug">
+                      {wire.description}
+                    </p>
+                  </div>
+                );
+              })}
+
+              {currentLesson.passives.length > 0 && (
+                <div className="space-y-1.5 pt-1">
+                  <div className="text-xs font-bold text-amber-400">
+                    ⚡ 必接被動元件（電阻）
+                  </div>
+                  {currentLesson.passives.map((p) => (
+                    <div
+                      key={p.id}
+                      className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs space-y-1"
+                    >
+                      <div className="font-bold text-amber-300">
+                        {p.value}（跨接孔位 {p.fromHole} ↔ {p.toHole}）
+                      </div>
+                      <p className="text-slate-300 text-[11px]">{p.purpose}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* MOBILE TAB 2: Interactive Sensor Sliders + Live Serial Monitor */}
+          {mobileTab === 'sim' && (
+            <div className="space-y-3">
+              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+                <div className="text-xs font-bold text-cyan-400">
+                  🎛️ 拖動滑桿測試感測器（上方麵包板即時反應）
+                </div>
+                {currentLesson.simControls.map((ctrl) => {
+                  const val = simValues[ctrl.id] ?? ctrl.defaultValue;
+                  if (ctrl.type === 'toggle') {
+                    return (
+                      <div
+                        key={ctrl.id}
+                        className="flex items-center justify-between bg-slate-950 p-2.5 rounded-lg border border-slate-800"
+                      >
+                        <span className="text-xs font-medium text-slate-200">
+                          {ctrl.label}
+                        </span>
+                        <button
+                          onClick={() =>
+                            setSimValues((prev) => ({
+                              ...prev,
+                              [ctrl.id]: val === 1 ? 0 : 1,
+                            }))
+                          }
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold ${
+                            val === 1
+                              ? 'bg-cyan-500 text-slate-950'
+                              : 'bg-slate-800 text-slate-300'
+                          }`}
+                        >
+                          {val === 1 ? '已觸發 (ON)' : '點擊觸發'}
+                        </button>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={ctrl.id} className="space-y-1.5">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-slate-200 font-medium">
+                          {ctrl.label}
+                        </span>
+                        <span className="font-mono font-bold text-cyan-300">
+                          {val} {ctrl.unit || ''}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={ctrl.min}
+                        max={ctrl.max}
+                        step={ctrl.step}
+                        value={val}
+                        onChange={(e) =>
+                          setSimValues((prev) => ({
+                            ...prev,
+                            [ctrl.id]: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-cyan-500 h-2 bg-slate-800 rounded-lg"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono space-y-1.5">
+                <div className="text-[11px] font-bold text-emerald-400 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  UART0 Serial Monitor (115200 bps)
+                </div>
+                <div className="text-[11px] text-emerald-300 space-y-1 leading-relaxed break-all">
+                  {serialLogs.map((line, i) => (
+                    <div key={i}>{line}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* MOBILE TAB 3: Hardware Principles & Safety Pitfalls */}
+          {mobileTab === 'principle' && (
+            <div className="space-y-3">
+              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1.5">
+                <div className="text-xs font-bold text-cyan-400">範例概述</div>
+                <p className="text-xs text-slate-200 leading-relaxed">
+                  {currentLesson.summary}
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs font-bold text-rose-400">
+                  ⚠️ 防呆警告（通電前必看）
+                </div>
+                {currentLesson.pitfalls.map((item, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3 rounded-xl bg-rose-950/40 border border-rose-500/30 text-xs text-rose-200 leading-relaxed"
+                  >
+                    {item}
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs font-bold text-cyan-400">
+                  🔬 硬體電路與導通原理
+                </div>
+                {currentLesson.hardwarePrinciples.map((item, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-300 leading-relaxed"
+                  >
+                    • {item}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* MOBILE TAB 4: Dual Framework Code & Copy */}
+          {mobileTab === 'code' && (
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800">
+                  <button
+                    onClick={() => setCodeFramework('espidf')}
+                    className={`px-2.5 py-1 rounded text-xs font-bold ${
+                      codeFramework === 'espidf'
+                        ? 'bg-cyan-500 text-slate-950'
+                        : 'text-slate-400'
+                    }`}
+                  >
+                    ESP-IDF (C)
+                  </button>
+                  <button
+                    onClick={() => setCodeFramework('arduino')}
+                    className={`px-2.5 py-1 rounded text-xs font-bold ${
+                      codeFramework === 'arduino'
+                        ? 'bg-emerald-500 text-slate-950'
+                        : 'text-slate-400'
+                    }`}
+                  >
+                    Arduino C++
+                  </button>
+                </div>
+
+                <button
+                  onClick={handleCopyCode}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 text-xs font-bold text-cyan-300 border border-slate-700"
+                >
+                  {copiedCode ? '✓ 已複製程式碼' : '📋 複製程式碼'}
+                </button>
+              </div>
+
+              <pre className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-[11px] font-mono leading-relaxed text-slate-200 overflow-x-auto select-all">
+                <code>
+                  {codeFramework === 'espidf'
+                    ? currentLesson.espIdfCode
+                    : currentLesson.arduinoCode}
+                </code>
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // DESKTOP THREE-COLUMN WORKBENCH (>= 1024px)
+  // ============================================================================
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-slate-950 text-slate-100">
       {/* Top Header Bar */}
       <header className="h-14 shrink-0 border-b border-slate-800 bg-slate-900/90 px-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center font-black text-slate-950 text-sm shadow-lg shadow-cyan-500/20">
+          <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center font-black text-slate-950 text-sm shadow-lg">
             ESP
           </div>
           <div>
@@ -780,7 +1847,7 @@ export default function App() {
             className="px-2.5 py-1 rounded-md bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-semibold transition"
             title="複製包含目前範例與自訂接線的分享網址"
           >
-            {copiedLink ? "✓ 已複製分享網址" : "🔗 分享目前接線"}
+            {copiedLink ? '✓ 已複製分享網址' : '🔗 分享目前接線'}
           </button>
           <label className="flex items-center gap-1.5 cursor-pointer select-none text-slate-300">
             <input
@@ -862,7 +1929,7 @@ export default function App() {
                   onClick={() => setSelectedLessonId(lesson.id)}
                   className={`w-full text-left p-3 rounded-xl border transition-all ${
                     active
-                      ? 'bg-gradient-to-r from-cyan-500/15 to-blue-600/10 border-cyan-500/60 shadow-lg shadow-cyan-950/50'
+                      ? 'bg-gradient-to-r border-cyan-500/60 shadow-lg'
                       : 'bg-slate-900/70 border-slate-800/80 hover:border-slate-700 hover:bg-slate-800/50'
                   }`}
                 >
@@ -907,7 +1974,6 @@ export default function App() {
 
         {/* CENTER WORKSPACE: Interactive Breadboard Canvas + Simulation Bar */}
         <main className="flex-1 flex flex-col bg-slate-950 overflow-hidden relative">
-          {/* Top Lesson Banner & Quick Status */}
           <div className="px-4 py-2.5 border-b border-slate-800/80 bg-slate-900/40 flex items-center justify-between gap-4">
             <div>
               <div className="flex items-center gap-2">
@@ -923,7 +1989,6 @@ export default function App() {
               </p>
             </div>
 
-            {/* Practice Mode Toolbar */}
             {practiceMode && (
               <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 px-3 py-1.5 rounded-lg">
                 <span className="text-xs font-semibold text-amber-300">
@@ -966,554 +2031,17 @@ export default function App() {
             )}
           </div>
 
-          {/* Interactive SVG Breadboard Area */}
           <div className="flex-1 overflow-auto flex items-center justify-center p-4 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:20px_20px]">
             <div
               className="transition-transform origin-center"
               style={{ transform: `scale(${zoom})` }}
             >
-              <svg
-                width={1090}
-                height={470}
-                viewBox="0 0 1090 470"
-                className="select-none drop-shadow-2xl"
-              >
-                <defs>
-                  <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-                    <feGaussianBlur stdDeviation="3" result="blur" />
-                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
-                  </filter>
-                </defs>
-
-                {/* Breadboard Base Plastic Body */}
-                <rect
-                  x={28}
-                  y={28}
-                  width={1034}
-                  height={405}
-                  rx={16}
-                  fill="#f8fafc"
-                  stroke="#cbd5e1"
-                  strokeWidth={3}
-                />
-
-                {/* Top & Bottom Power Rail Red/Blue Lines */}
-                <line
-                  x1={66}
-                  y1={BOARD_ORIGIN_Y - 10}
-                  x2={1026}
-                  y2={BOARD_ORIGIN_Y - 10}
-                  stroke="#ef4444"
-                  strokeWidth={2}
-                />
-                <text
-                  x={48}
-                  y={BOARD_ORIGIN_Y + 4}
-                  className="fill-red-600 text-xs font-black font-mono"
-                >
-                  +
-                </text>
-                <line
-                  x1={66}
-                  y1={BOARD_ORIGIN_Y + PITCH + 10}
-                  x2={1026}
-                  y2={BOARD_ORIGIN_Y + PITCH + 10}
-                  stroke="#2563eb"
-                  strokeWidth={2}
-                />
-                <text
-                  x={48}
-                  y={BOARD_ORIGIN_Y + PITCH + 4}
-                  className="fill-blue-600 text-xs font-black font-mono"
-                >
-                  -
-                </text>
-
-                {/* Bottom Power Rail Lines */}
-                <line
-                  x1={66}
-                  y1={BOARD_ORIGIN_Y + 15 * PITCH - 10}
-                  x2={1026}
-                  y2={BOARD_ORIGIN_Y + 15 * PITCH - 10}
-                  stroke="#ef4444"
-                  strokeWidth={2}
-                />
-                <text
-                  x={48}
-                  y={BOARD_ORIGIN_Y + 15 * PITCH + 4}
-                  className="fill-red-600 text-xs font-black font-mono"
-                >
-                  +
-                </text>
-                <line
-                  x1={66}
-                  y1={BOARD_ORIGIN_Y + 16 * PITCH + 10}
-                  x2={1026}
-                  y2={BOARD_ORIGIN_Y + 16 * PITCH + 10}
-                  stroke="#2563eb"
-                  strokeWidth={2}
-                />
-                <text
-                  x={48}
-                  y={BOARD_ORIGIN_Y + 16 * PITCH + 4}
-                  className="fill-blue-600 text-xs font-black font-mono"
-                >
-                  -
-                </text>
-
-                {/* Center DIP Ravine Groove */}
-                <rect
-                  x={42}
-                  y={BOARD_ORIGIN_Y + 7.6 * PITCH}
-                  width={1006}
-                  height={1.3 * PITCH}
-                  rx={4}
-                  fill="#e2e8f0"
-                  stroke="#cbd5e1"
-                  strokeWidth={1}
-                />
-
-                {/* Column Numbers (1..48) */}
-                {Array.from({ length: TOTAL_COLS }, (_, i) => {
-                  const col = i + 1;
-                  const x = BOARD_ORIGIN_X + i * PITCH;
-                  const showNum = col === 1 || col % 5 === 0 || col === TOTAL_COLS;
-                  if (!showNum) return null;
-                  return (
-                    <g key={`col-num-${col}`}>
-                      <text
-                        x={x}
-                        y={BOARD_ORIGIN_Y + 2.4 * PITCH}
-                        textAnchor="middle"
-                        className="fill-slate-500 text-[10px] font-mono font-bold"
-                      >
-                        {col}
-                      </text>
-                      <text
-                        x={x}
-                        y={BOARD_ORIGIN_Y + 14.2 * PITCH}
-                        textAnchor="middle"
-                        className="fill-slate-500 text-[10px] font-mono font-bold"
-                      >
-                        {col}
-                      </text>
-                    </g>
-                  );
-                })}
-
-                {/* Row Letters (a..e, f..j) */}
-                {UPPER_ROWS.map((r, idx) => {
-                  const y = BOARD_ORIGIN_Y + (3 + idx) * PITCH + 4;
-                  return (
-                    <g key={`row-u-${r}`}>
-                      <text
-                        x={52}
-                        y={y}
-                        textAnchor="middle"
-                        className="fill-slate-600 text-[11px] font-mono font-bold uppercase"
-                      >
-                        {r}
-                      </text>
-                      <text
-                        x={1038}
-                        y={y}
-                        textAnchor="middle"
-                        className="fill-slate-600 text-[11px] font-mono font-bold uppercase"
-                      >
-                        {r}
-                      </text>
-                    </g>
-                  );
-                })}
-                {LOWER_ROWS.map((r, idx) => {
-                  const y = BOARD_ORIGIN_Y + (9.5 + idx) * PITCH + 4;
-                  return (
-                    <g key={`row-l-${r}`}>
-                      <text
-                        x={52}
-                        y={y}
-                        textAnchor="middle"
-                        className="fill-slate-600 text-[11px] font-mono font-bold uppercase"
-                      >
-                        {r}
-                      </text>
-                      <text
-                        x={1038}
-                        y={y}
-                        textAnchor="middle"
-                        className="fill-slate-600 text-[11px] font-mono font-bold uppercase"
-                      >
-                        {r}
-                      </text>
-                    </g>
-                  );
-                })}
-
-                {/* Conductive Strip Highlight Overlay */}
-                {showConductiveStrips && highlightedHoles.size > 0 && (
-                  <g className="pointer-events-none">
-                    {Array.from(highlightedHoles).map((hId) => {
-                      const pt = getHoleCoords(hId);
-                      return (
-                        <circle
-                          key={`hl-${hId}`}
-                          cx={pt.x}
-                          cy={pt.y}
-                          r={8}
-                          fill="#22d3ee"
-                          opacity={0.35}
-                        />
-                      );
-                    })}
-                  </g>
-                )}
-
-                {/* Render All Breadboard Holes */}
-                {Array.from({ length: TOTAL_COLS }, (_, i) => {
-                  const col = i + 1;
-                  const holesInCol = [
-                    `tp+${col}`,
-                    `tp-${col}`,
-                    ...UPPER_ROWS.map((r) => `${r}${col}`),
-                    ...LOWER_ROWS.map((r) => `${r}${col}`),
-                    `bp+${col}`,
-                    `bp-${col}`,
-                  ];
-                  return (
-                    <g key={`holes-col-${col}`}>
-                      {holesInCol.map((hId) => {
-                        const pt = getHoleCoords(hId);
-                        const isHighlighted = highlightedHoles.has(hId);
-                        const isStart = pendingStartHole === hId;
-                        return (
-                          <g
-                            key={hId}
-                            onMouseEnter={() => setHoveredHole(hId)}
-                            onMouseLeave={() => setHoveredHole(null)}
-                            onClick={() => handleHoleClick(hId)}
-                            className="cursor-pointer"
-                          >
-                            <rect
-                              x={pt.x - 4.5}
-                              y={pt.y - 4.5}
-                              width={9}
-                              height={9}
-                              rx={2}
-                              fill={
-                                isStart
-                                  ? '#f59e0b'
-                                  : isHighlighted
-                                  ? '#06b6d4'
-                                  : '#334155'
-                              }
-                              stroke={
-                                isHighlighted || isStart ? '#0891b2' : '#94a3b8'
-                              }
-                              strokeWidth={isHighlighted || isStart ? 1.8 : 0.8}
-                            />
-                          </g>
-                        );
-                      })}
-                    </g>
-                  );
-                })}
-
-                {/* ESP32-WROOM-32 DevKitC 30-Pin Module */}
-                <g>
-                  {/* Gold Pin Headers Plugged Into Row c (c4..c18) and Row h (h4..h18) */}
-                  {ESP32_PINS.map((pin) => {
-                    const pt = getHoleCoords(pin.hole);
-                    const isUsed = activeWires.some(
-                      (w) =>
-                        getStripId(w.fromHole) === getStripId(pin.hole) ||
-                        getStripId(w.toHole) === getStripId(pin.hole)
-                    );
-                    return (
-                      <g
-                        key={pin.pinNumber}
-                        onMouseEnter={() => setHoveredHole(pin.hole)}
-                        onMouseLeave={() => setHoveredHole(null)}
-                        onClick={() => handleHoleClick(pin.hole)}
-                        className="cursor-pointer"
-                      >
-                        <rect
-                          x={pt.x - 5}
-                          y={pt.y - 5}
-                          width={10}
-                          height={10}
-                          rx={2}
-                          fill={isUsed ? '#eab308' : '#64748b'}
-                          stroke={isUsed ? '#fef08a' : '#1e293b'}
-                          strokeWidth={1.5}
-                        />
-                      </g>
-                    );
-                  })}
-
-                  {/* Main Dark PCB Body */}
-                  <rect
-                    x={espLeftX}
-                    y={espTopY}
-                    width={espRightX - espLeftX}
-                    height={espBotY - espTopY}
-                    rx={8}
-                    fill="#0f172a"
-                    stroke="#38bdf8"
-                    strokeWidth={2}
-                  />
-
-                  {/* Micro-USB Port on Left Edge */}
-                  <rect
-                    x={espLeftX - 10}
-                    y={(espTopY + espBotY) / 2 - 16}
-                    width={18}
-                    height={32}
-                    rx={3}
-                    fill="#94a3b8"
-                    stroke="#475569"
-                    strokeWidth={1.5}
-                  />
-
-                  {/* Metallic ESP32-WROOM-32 RF Shield Can */}
-                  <rect
-                    x={espLeftX + 68}
-                    y={espTopY + 20}
-                    width={155}
-                    height={espBotY - espTopY - 40}
-                    rx={4}
-                    fill="#334155"
-                    stroke="#94a3b8"
-                    strokeWidth={1.5}
-                  />
-                  <text
-                    x={espLeftX + 145}
-                    y={(espTopY + espBotY) / 2 - 3}
-                    textAnchor="middle"
-                    className="fill-slate-200 text-xs font-bold tracking-wider pointer-events-none"
-                  >
-                    ESP32-WROOM-32
-                  </text>
-                  <text
-                    x={espLeftX + 145}
-                    y={(espTopY + espBotY) / 2 + 12}
-                    textAnchor="middle"
-                    className="fill-cyan-400 text-[10px] font-mono pointer-events-none"
-                  >
-                    Dual-Core 240MHz · Wi-Fi & BLE
-                  </text>
-
-                  {/* Power Red LED on ESP32 */}
-                  <circle
-                    cx={espLeftX + 32}
-                    cy={(espTopY + espBotY) / 2}
-                    r={4}
-                    fill="#ef4444"
-                    filter="url(#glow)"
-                  />
-
-                  {/* Crisp Silk Labels for All 30 ESP32 Pins */}
-                  {ESP32_PINS.map((pin) => {
-                    const pt = getHoleCoords(pin.hole);
-                    const isTop = pin.side === 'top';
-                    const isUsed = activeWires.some(
-                      (w) =>
-                        getStripId(w.fromHole) === getStripId(pin.hole) ||
-                        getStripId(w.toHole) === getStripId(pin.hole)
-                    );
-                    const labelY = isTop ? espTopY + 13 : espBotY - 6;
-                    return (
-                      <text
-                        key={`silk-${pin.pinNumber}`}
-                        x={pt.x}
-                        y={labelY}
-                        textAnchor="middle"
-                        className={`text-[9px] font-mono font-bold pointer-events-none ${
-                          isUsed
-                            ? 'fill-amber-300'
-                            : pin.silk === '3V3' || pin.silk === 'VIN'
-                            ? 'fill-rose-400'
-                            : pin.silk === 'GND'
-                            ? 'fill-slate-400'
-                            : 'fill-slate-300'
-                        }`}
-                      >
-                        {pin.silk}
-                      </text>
-                    );
-                  })}
-                </g>
-
-                {/* Render Sensor Modules */}
-                {currentLesson.components.map((comp) =>
-                  renderSensorComponent(comp)
-                )}
-
-                {/* Render Passive Resistors */}
-                {currentLesson.passives.map((pas) => {
-                  const p1 = getHoleCoords(pas.fromHole);
-                  const p2 = getHoleCoords(pas.toHole);
-                  const midX = (p1.x + p2.x) / 2;
-                  const midY = (p1.y + p2.y) / 2;
-                  const angle =
-                    (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
-                  return (
-                    <g key={pas.id} className="pointer-events-none">
-                      <line
-                        x1={p1.x}
-                        y1={p1.y}
-                        x2={p2.x}
-                        y2={p2.y}
-                        stroke="#94a3b8"
-                        strokeWidth={2.5}
-                      />
-                      <g
-                        transform={`translate(${midX}, ${midY}) rotate(${angle})`}
-                      >
-                        <rect
-                          x={-14}
-                          y={-5}
-                          width={28}
-                          height={10}
-                          rx={4}
-                          fill="#fde68a"
-                          stroke="#92400e"
-                          strokeWidth={1.2}
-                        />
-                        {pas.bands.map((bColor, idx) => (
-                          <rect
-                            key={idx}
-                            x={-9 + idx * 5.5}
-                            y={-5}
-                            width={2.5}
-                            height={10}
-                            fill={bColor}
-                          />
-                        ))}
-                      </g>
-                      {showPinLabels && (
-                        <text
-                          x={midX}
-                          y={midY - 10}
-                          textAnchor="middle"
-                          className="fill-amber-900 text-[10px] font-bold"
-                        >
-                          {pas.value}
-                        </text>
-                      )}
-                    </g>
-                  );
-                })}
-
-                {/* Render Jumper Wires with Smooth Bezier Curves */}
-                {activeWires.map((wire, idx) => {
-                  const p1 = getHoleCoords(wire.fromHole);
-                  const p2 = getHoleCoords(wire.toHole);
-                  const dx = p2.x - p1.x;
-                  const dy = p2.y - p1.y;
-                  const midX = (p1.x + p2.x) / 2;
-                  const midY = (p1.y + p2.y) / 2;
-                  // Offset curve so wires don't overlap flatly
-                  const curveArc =
-                    wire.arcOffset !== undefined
-                      ? wire.arcOffset
-                      : Math.abs(dy) < 40
-                      ? -28 - (idx % 3) * 12
-                      : (idx % 2 === 0 ? 1 : -1) * 24;
-                  const ctrlX = midX;
-                  const ctrlY = midY + curveArc;
-                  const pathD = `M ${p1.x} ${p1.y} Q ${ctrlX} ${ctrlY} ${p2.x} ${p2.y}`;
-                  const strokeHex = WIRE_HEX[wire.color] || '#38bdf8';
-                  const isHovered = hoveredWireId === wire.id;
-
-                  return (
-                    <g
-                      key={wire.id}
-                      onMouseEnter={() => setHoveredWireId(wire.id)}
-                      onMouseLeave={() => setHoveredWireId(null)}
-                      onClick={() => {
-                        if (practiceMode) {
-                          // Click wire in practice mode to remove it
-                          setUserWires((prev) =>
-                            prev.filter((w) => w.id !== wire.id)
-                          );
-                        }
-                      }}
-                      className="cursor-pointer"
-                    >
-                      {/* Outer Shadow / Glow on Hover */}
-                      <path
-                        d={pathD}
-                        fill="none"
-                        stroke={isHovered ? '#ffffff' : '#020617'}
-                        strokeWidth={isHovered ? 8 : 6.5}
-                        strokeLinecap="round"
-                        opacity={isHovered ? 0.85 : 0.45}
-                      />
-                      {/* Colored Insulation Core */}
-                      <path
-                        d={pathD}
-                        fill="none"
-                        stroke={strokeHex}
-                        strokeWidth={isHovered ? 5.5 : 4.2}
-                        strokeLinecap="round"
-                      />
-                      {/* Boot Caps at Both Ends */}
-                      <circle
-                        cx={p1.x}
-                        cy={p1.y}
-                        r={4.2}
-                        fill={strokeHex}
-                        stroke="#ffffff"
-                        strokeWidth={1.2}
-                      />
-                      <circle
-                        cx={p2.x}
-                        cy={p2.y}
-                        r={4.2}
-                        fill={strokeHex}
-                        stroke="#ffffff"
-                        strokeWidth={1.2}
-                      />
-
-                      {/* Floating Signal Pill Label */}
-                      {(showPinLabels || isHovered) && (
-                        <g
-                          transform={`translate(${ctrlX}, ${
-                             (p1.y + 2 * ctrlY + p2.y) / 4
-                          })`}
-                          className="pointer-events-none"
-                        >
-                          <rect
-                            x={-68}
-                            y={-10}
-                            width={136}
-                            height={18}
-                            rx={9}
-                            fill="#0f172a"
-                            fillOpacity={0.92}
-                            stroke={strokeHex}
-                            strokeWidth={1.4}
-                          />
-                          <text
-                            x={0}
-                            y={2.5}
-                            textAnchor="middle"
-                            className="fill-slate-100 text-[9.5px] font-mono font-bold"
-                          >
-                            {wire.signalName}
-                          </text>
-                        </g>
-                      )}
-                    </g>
-                  );
-                })}
-              </svg>
+              {renderBreadboardSvg()}
             </div>
           </div>
 
           {/* Bottom Interactive Simulation & Live Serial Monitor Bar */}
           <div className="h-44 shrink-0 border-t border-slate-800 bg-slate-900/90 grid grid-cols-12 divide-x divide-slate-800">
-            {/* Left 4 Cols: Hole / Wire Live Inspector */}
             <div className="col-span-4 p-3 flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between mb-1.5">
@@ -1572,7 +2100,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Middle 4 Cols: Interactive Sensor Simulation Sliders */}
             <div className="col-span-4 p-3 flex flex-col justify-between overflow-y-auto">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400">
@@ -1643,7 +2170,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Right 4 Cols: Simulated ESP-IDF / Arduino Serial Monitor */}
             <div className="col-span-4 p-3 bg-slate-950 flex flex-col font-mono">
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-[11px] font-bold text-emerald-400 flex items-center gap-1.5">
@@ -1663,9 +2189,8 @@ export default function App() {
           </div>
         </main>
 
-        {/* RIGHT SIDEBAR: Wiring Table, Hardware Principles, Pitfalls, and Dual-Framework Code */}
+        {/* RIGHT SIDEBAR */}
         <aside className="w-[430px] shrink-0 border-l border-slate-800 bg-slate-900/75 flex flex-col">
-          {/* Tab Switcher */}
           <div className="grid grid-cols-3 border-b border-slate-800 bg-slate-950/60 p-1 gap-1">
             <button
               onClick={() => setRightTab('guide')}
@@ -1699,10 +2224,8 @@ export default function App() {
             </button>
           </div>
 
-          {/* Tab 1: Wiring Table, Application & Hardware Notes */}
           {rightTab === 'guide' && (
             <div className="flex-1 overflow-y-auto p-4 space-y-5">
-              {/* Summary */}
               <section className="space-y-1.5">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">
                   範例功能概述
@@ -1712,7 +2235,6 @@ export default function App() {
                 </p>
               </section>
 
-              {/* Interactive Wiring Pin-to-Pin Table */}
               <section className="space-y-2">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">
@@ -1786,7 +2308,6 @@ export default function App() {
                 </div>
               </section>
 
-              {/* Passive Resistors if any */}
               {currentLesson.passives.length > 0 && (
                 <section className="space-y-1.5">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-amber-400">
@@ -1808,7 +2329,6 @@ export default function App() {
                 </section>
               )}
 
-              {/* Hardware Principles */}
               <section className="space-y-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">
                   硬體電路與麵包板導通原理
@@ -1826,7 +2346,6 @@ export default function App() {
                 </ul>
               </section>
 
-              {/* Pitfalls & Safety Warnings */}
               <section className="space-y-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-rose-400">
                   常見接錯防呆與硬體注意事項
@@ -1843,7 +2362,6 @@ export default function App() {
                 </div>
               </section>
 
-              {/* Real-world Applications */}
               <section className="space-y-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">
                   實務應用場景
@@ -1863,7 +2381,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Tab 2: Dual Framework Code (ESP-IDF C vs Arduino C++) */}
           {rightTab === 'code' && (
             <div className="flex-1 flex flex-col overflow-hidden p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -1914,7 +2431,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Tab 3: Complete 30-Pin ESP32 Reference Table */}
           {rightTab === 'pinout' && (
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
               <div className="text-xs text-slate-300 bg-slate-950/80 p-3 rounded-xl border border-slate-800 leading-relaxed">
