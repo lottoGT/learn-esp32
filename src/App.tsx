@@ -1806,9 +1806,9 @@ export default function App() {
               <h1 className="font-bold text-base tracking-tight text-white">
                 ESP32 互動式麵包板學習工作台
               </h1>
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-medium">
-                DuRuofu/ESP32-Guide 實戰對照
-              </span>
+              <a href="https://github.com/DuRuofu/ESP32-Guide" target="_blank" rel="noopener noreferrer" className="text-[11px] px-2 py-0.5 rounded-full bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-medium transition" title="前往原作者 DuRuofu 的 ESP32-Guide GitHub 倉庫">
+                📚 致謝參考：DuRuofu/ESP32-Guide ↗
+              </a>
             </div>
             <p className="text-xs text-slate-400">
               全圖形麵包板接線視覺化 · 5孔銅片導通高亮 · 動態感測器模擬 · ESP-IDF / Arduino 雙框架程式碼

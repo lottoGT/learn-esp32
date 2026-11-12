@@ -27,10 +27,25 @@
 
 ---
 
+## 🙏 致謝與參考引用之 GitHub 開源專案 (Credits & Acknowledgements)
+
+本專案在製作過程中，深度參考並引用了以下優秀的 GitHub 開源教程、官方開發框架與驅動程式庫。特此向原作者與開源社群致上最高敬意：
+
+| 參考專案 / 倉庫 | 原作者 / 維護團隊 | 引用與參考內容說明 |
+| :--- | :--- | :--- |
+| **[DuRuofu/ESP32-Guide](https://github.com/DuRuofu/ESP32-Guide)** | [@DuRuofu](https://github.com/DuRuofu) | **核心教材靈感與章節架構來源**：本工作台的課程章節編排（第 4.1 節基礎外設 GPIO、UART、GPTimer、ADC、LEDC PWM、I2C、SPI 與第 4.2 節儲存/感測器實戰）及 ESP-IDF 範例設計，皆參考自 DuRuofu 開源的《ESP32 從初見到入門》教程。強烈推薦前往原倉庫閱讀完整深度文章！ |
+| **[espressif/esp-idf](https://github.com/espressif/esp-idf)** | [Espressif Systems (樂鑫官方)](https://github.com/espressif) | **ESP-IDF v5.x 官方開發框架与外設驅動**：本專案中 ESP-IDF (C 語言) 範例所使用的 `driver/gpio`、`driver/ledc`、`esp_adc/adc_oneshot`、`driver/i2c_master`、`esp_vfs_fat`、`driver/uart` 與 `espressif/led_strip` (RMT) 皆遵循樂鑫官方 ESP-IDF API 規範與 ESP32-WROOM-32 硬體手冊。 |
+| **[espressif/arduino-esp32](https://github.com/espressif/arduino-esp32)** | [Espressif Systems (樂鑫官方)](https://github.com/espressif) | **Arduino-ESP32 核心庫**：本專案右側「Arduino C++ 快速實作對照」分頁中的 `ledcAttach`、`analogReadMilliVolts`、`Wire`、`SPI`、`SD`、`Serial2` 等語法參考自官方 Arduino Core for ESP32。 |
+| **[adafruit/DHT-sensor-library](https://github.com/adafruit/DHT-sensor-library)** | [Adafruit Industries](https://github.com/adafruit) | **DHT11 / DHT22 單總線感測器庫**：Arduino 對照版中讀取 DHT11 溫濕度所使用的經典開源函式庫。 |
+| **[adafruit/Adafruit_NeoPixel](https://github.com/adafruit/Adafruit_NeoPixel)** | [Adafruit Industries](https://github.com/adafruit) | **WS2812B 智慧全彩燈珠驅動庫**：Arduino 對照版中控制 WS2812B (NeoPixel) RGB 燈環所使用的開源函式庫。 |
+| **[facebook/react](https://github.com/facebook/react)** & **[vitejs/vite](https://github.com/vitejs/vite)** | Meta Open Source & Vite Team | 本專案全圖形互動介面與前端打包工具鏈。 |
+
+---
+
 ## 🌐 線上直接玩 (Online Interactive Workbench)
 
 👉 **直接點擊開啟：[https://lottogt.github.io/learn-esp32/](https://lottogt.github.io/learn-esp32/)**  
-*(免安裝任何軟體、免下載，電腦與平板瀏覽器點開即可直接看接線、拉滑桿模擬、或進行自由接線測驗！)*
+*(支援電腦寬螢幕三欄工作台與 **手機直式單手操作介面**，免安裝任何軟體，點開即可直接看接線、拉滑桿模擬、或進行自由接線測驗！)*
 
 ---
 
@@ -39,8 +54,9 @@
 | 功能模組 | 說明 |
 | :--- | :--- |
 | **🧩 中間全圖形 SVG 麵包板** | 內建標準 **30-Pin ESP32-WROOM-32 DevKitC** 與 48 欄麵包板（含正負電源軌 `+`/`-`、中央凹槽、A~J 列與欄號座標），所有腳位絲印與電阻色碼清楚可見。 |
-| **💡 5 孔銅片導通高亮** | 滑鼠移到任意孔位、ESP32 接腳或杜邦線時，**麵包板內部同一排導通的 5 個孔位（`a~e` 或 `f~j`）會同步發光**，一眼搞懂為什麼插在同一排就能導通。 |
-| **🎛️ 感測器物理量動態模擬器** | 拉動下方滑桿（溫度、濕度、照度、距離、舵機角度、陀螺儀傾角、RGB 色相、GPS 衛星數）或點擊麵包板上的微動按鈕，畫面上的 LED、SG90 舵機轉臂、OLED 螢幕與右下角 `UART0 Serial Monitor` 會即時反應。 |
+| **📱 直式手機版專屬 UI/UX** | 手機開啟時自動切換為「上方智慧鏡頭麵包板（支援 `雙端特寫`、`晶片端`、`感測器` 放大）+ 下方四分頁觸控卡片」，在桌邊拿手機對照實體麵包板超方便。 |
+| **💡 5 孔銅片導通高亮** | 滑鼠移過或手指點擊任意孔位、ESP32 接腳或杜邦線時，**麵包板內部同一排導通的 5 個孔位（`a~e` 或 `f~j`）會同步發光**，一眼搞懂為什麼插在同一排就能導通。 |
+| **🎛️ 感測器物理量動態模擬器** | 拉動下方滑桿（溫度、濕度、照度、距離、舵機角度、陀螺儀傾角、RGB 色相、GPS 衛星數）或點擊麵包板上的微動按鈕，畫面上的 LED、SG90 舵機轉臂、OLED 螢幕與 `UART0 Serial Monitor` 會即時反應。 |
 | **⚡ 自由接線練習 / 測驗模式** | 切換至「練習模式」會拔除範例線材，讓你自己點擊麵包板孔位拉杜邦線；內建 **Breadboard Netlist 圖論解算器**，只要插在同一排 5 孔導通範圍內都算正確！還可點 **「🔗 分享目前接線」** 把你接好的網址傳給朋友看。 |
 | **💻 雙框架程式碼一鍵複製** | 每個範例皆同時提供 **ESP-IDF (C 語言 v5.x，對齊 [DuRuofu/ESP32-Guide](https://github.com/DuRuofu/ESP32-Guide) 教程)** 與 **Arduino C++** 雙版本程式碼。 |
 
